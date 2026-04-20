@@ -23,19 +23,29 @@ compile = False # use PyTorch 2.0 to compile the model to be faster
 exec(open('configurator.py').read()) # overrides from command line or config file
 # -----------------------------------------------------------------------------
 
+requested_device = device
+if device.startswith('cuda') and not torch.cuda.is_available():
+    device = 'mps' if torch.backends.mps.is_available() else 'cpu'
+elif device == 'mps' and not torch.backends.mps.is_available():
+    device = 'cpu'
+if device != requested_device:
+    print(f"Requested device '{requested_device}' is unavailable, falling back to '{device}'.")
+
 torch.manual_seed(seed)
-torch.cuda.manual_seed(seed)
-torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
-torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
-device_type = 'cuda' if 'cuda' in device else 'cpu' # for later use in torch.autocast
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(seed)
+    torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
+    torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
+device_type = 'cuda' if device.startswith('cuda') else ('mps' if device == 'mps' else 'cpu') # for later use in torch.autocast
 ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[dtype]
-ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
+ctx = nullcontext() if device_type != 'cuda' else torch.amp.autocast(device_type='cuda', dtype=ptdtype)
 
 # model
 if init_from == 'resume':
     # init from a model saved in a specific directory
     ckpt_path = os.path.join(out_dir, 'ckpt.pt')
-    checkpoint = torch.load(ckpt_path, map_location=device)
+    # Always deserialize checkpoint tensors on CPU first, then move model below.
+    checkpoint = torch.load(ckpt_path, map_location='cpu')
     gptconf = GPTConfig(**checkpoint['model_args'])
     model = GPT(gptconf)
     state_dict = checkpoint['model']
